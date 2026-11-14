@@ -1,0 +1,7 @@
+[package]
+name = "earshot-dsp"
+description = "Pitch detection and music maths for Earshot, with no engine or audio I/O dependencies"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
