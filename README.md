@@ -35,7 +35,8 @@ Open http://localhost:8080 and click once: browsers only allow the mic after a c
 
 | Path | What |
 |---|---|
-| `crates/earshot-dsp` | Pitch detection (YIN), note maths, tuner logic. No Bevy, fast to test. |
+| `crates/earshot-dsp` | Pitch detection (YIN), note detection (which note, when), note maths, tuner logic. No Bevy, fast to test. |
+| `clips/` | Real recordings of an acoustic guitar through a USB mic, used by the tests. |
 | `crates/earshot` | The Bevy app: mic input and screens. |
 | `crates/earshot/src/mic/native.rs` | Native capture with cpal (PipeWire on Linux), via a lock-free ring buffer. |
 | `crates/earshot/src/mic/web.rs` | Browser capture with Web Audio (cpal has no mic input on the web). |
@@ -44,6 +45,15 @@ Open http://localhost:8080 and click once: browsers only allow the mic after a c
 
 ```sh
 cargo test -p earshot-dsp
+```
+
+`tests/clips.rs` checks note detection against the recordings in `clips/`, with pluck times read off the waveforms.
+
+Two tools for looking at a recording:
+
+```sh
+cargo run -p earshot-dsp --example notes -- clips/*.wav        # the notes the detector finds
+cargo run -p earshot-dsp --example track -- clips/open-e2.wav  # pitch and level over time
 ```
 
 ## Licences

@@ -5,6 +5,7 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+realfft = "3.5.1"
 
 [dev-dependencies]
 hound = "3.5.1"

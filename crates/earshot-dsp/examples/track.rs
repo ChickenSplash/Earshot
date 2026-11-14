@@ -2,6 +2,9 @@
 //!
 //! cargo run -p earshot-dsp --example track -- clips/open-e2.wav [step_ms]
 
+#[path = "../support/wav.rs"]
+mod wav;
+
 use earshot_dsp::{Yin, hz_to_midi, level_db, note_name};
 
 const WINDOW: usize = 4096;
@@ -14,25 +17,7 @@ fn main() {
         .next()
         .map_or(50.0, |s| s.parse().expect("step_ms must be a number"));
 
-    let mut reader = hound::WavReader::open(&path).expect("can't open the wav");
-    let spec = reader.spec();
-    let channels = spec.channels as usize;
-    let raw: Vec<f32> = match spec.sample_format {
-        hound::SampleFormat::Int => {
-            let scale = (1u32 << (spec.bits_per_sample - 1)) as f32;
-            reader
-                .samples::<i32>()
-                .map(|s| s.unwrap() as f32 / scale)
-                .collect()
-        }
-        hound::SampleFormat::Float => reader.samples::<f32>().map(|s| s.unwrap()).collect(),
-    };
-    let samples: Vec<f32> = raw
-        .chunks(channels)
-        .map(|f| f.iter().sum::<f32>() / channels as f32)
-        .collect();
-
-    let rate = spec.sample_rate as f32;
+    let (samples, rate) = wav::load(&path);
     let step = (rate * step_ms / 1000.0) as usize;
     let mut yin = Yin::new(rate, 60.0, 1000.0);
 

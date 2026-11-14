@@ -3,10 +3,12 @@
 //! Kept free of Bevy and audio I/O so it builds fast and is easy to test.
 
 pub mod note;
+pub mod notes;
 pub mod tuner;
 pub mod yin;
 
 pub use note::{hz_to_midi, midi_to_hz, note_name};
+pub use notes::{NoteDetector, NoteEvent};
 pub use tuner::{Reading, STANDARD_TUNING, Tuner};
 pub use yin::{Pitch, Yin};
 
