@@ -1,5 +1,9 @@
 mod mic;
+mod monitor;
+mod notes;
+mod screen;
 mod tuner;
+mod ui;
 
 use bevy::prelude::*;
 
@@ -18,8 +22,17 @@ fn main() {
             ..default()
         }))
         .insert_resource(ClearColor(Color::srgb(0.07, 0.07, 0.09)))
-        .add_plugins((mic::MicPlugin, tuner::TunerPlugin))
+        .add_plugins((
+            mic::MicPlugin,
+            notes::NotesPlugin,
+            screen::ScreenPlugin,
+            tuner::TunerPlugin,
+            monitor::MonitorPlugin,
+        ))
         .add_systems(PreStartup, use_fira_sans)
+        .add_systems(Startup, |mut commands: Commands| {
+            commands.spawn(Camera2d);
+        })
         .run();
 }
 

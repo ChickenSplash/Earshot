@@ -20,6 +20,13 @@ EARSHOT_INPUT=maono cargo run --release
 
 If the name doesn't match, the error lists every input it can see.
 
+Two screens, switched with the bar at the top or Tab:
+
+- **Tuner:** the nearest string and how many cents off it you are.
+- **Monitor:** each note as you pluck it, with the ones before. Desktop only for now.
+
+To start on a screen, pass its name: `cargo run --release -- monitor`.
+
 ### In the browser
 
 Needs [Trunk](https://trunkrs.dev) (`pacman -S trunk`) and the wasm target (`rustup target add wasm32-unknown-unknown`).

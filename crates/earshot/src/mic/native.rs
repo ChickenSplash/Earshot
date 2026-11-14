@@ -55,6 +55,7 @@ pub(super) fn start(mut commands: Commands) {
 
 pub(super) fn read(capture: Res<Capture>, mut mic: ResMut<Mic>) {
     mic.fresh = false;
+    mic.stream.clear();
 
     let mut opened = capture.opened.lock().unwrap();
     if let Some(rx) = opened.as_ref() {

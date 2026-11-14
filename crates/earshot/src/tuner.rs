@@ -2,10 +2,12 @@
 //! standard tuning and how many cents sharp or flat you are.
 
 use bevy::prelude::*;
-use bevy::text::FontSize;
 use earshot_dsp::{STANDARD_TUNING, Tuner, Yin, level_db, midi_to_hz, note_name};
 
-use crate::mic::{Mic, MicStatus};
+use crate::mic::Mic;
+use crate::notes::Plucked;
+use crate::screen::Screen;
+use crate::ui::{DIM, GOOD, OFF, TEXT, TRACK, font, screen_root};
 
 /// Quieter than this is treated as silence.
 const GATE_DB: f32 = -50.0;
@@ -14,18 +16,17 @@ const MAX_HZ: f32 = 1000.0;
 /// The needle's full travel either side of centre.
 const NEEDLE_RANGE_CENTS: f32 = 50.0;
 
-const TEXT: Color = Color::srgb(0.92, 0.92, 0.95);
-const DIM: Color = Color::srgb(0.45, 0.45, 0.52);
-const TRACK: Color = Color::srgb(0.18, 0.18, 0.22);
-const GOOD: Color = Color::srgb(0.35, 0.85, 0.5);
-const OFF: Color = Color::srgb(0.95, 0.6, 0.25);
-
 pub struct TunerPlugin;
 
 impl Plugin for TunerPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, setup)
-            .add_systems(Update, (listen, show).chain());
+        // Keep listening on other screens, so the tuner is ready when you come back.
+        app.add_systems(OnEnter(Screen::Tuner), setup).add_systems(
+            Update,
+            (listen, show.run_if(in_state(Screen::Tuner)))
+                .chain()
+                .after(crate::notes::detect),
+        );
     }
 }
 
@@ -53,9 +54,15 @@ struct StatusText;
 fn listen(
     mic: Res<Mic>,
     time: Res<Time>,
+    mut plucked: MessageReader<Plucked>,
     mut listening: Option<ResMut<Listening>>,
     mut commands: Commands,
 ) {
+    if let Some(state) = listening.as_deref_mut() {
+        for Plucked(note) in plucked.read() {
+            state.tuner.plucked(note.midi);
+        }
+    }
     if !mic.fresh {
         return;
     }
@@ -82,20 +89,9 @@ fn listen(
 }
 
 fn setup(mut commands: Commands) {
-    commands.spawn(Camera2d);
-
     commands
-        .spawn(Node {
-            width: percent(100),
-            height: percent(100),
-            flex_direction: FlexDirection::Column,
-            align_items: AlignItems::Center,
-            justify_content: JustifyContent::Center,
-            row_gap: px(24),
-            ..default()
-        })
+        .spawn(screen_root(Screen::Tuner))
         .with_children(|ui| {
-            ui.spawn((Text::new("Tuner"), font(28.0), TextColor(DIM)));
             ui.spawn((Text::new("·"), font(160.0), TextColor(TEXT), NoteText));
 
             // Needle track: centre is in tune, left is flat, right is sharp.
@@ -173,13 +169,6 @@ fn setup(mut commands: Commands) {
         });
 }
 
-fn font(size: f32) -> TextFont {
-    TextFont {
-        font_size: FontSize::Px(size),
-        ..default()
-    }
-}
-
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
 fn show(
     mic: Res<Mic>,
@@ -194,14 +183,7 @@ fn show(
     mut level_bar: Single<(&mut Node, &mut BackgroundColor), (With<LevelBar>, Without<Needle>)>,
     mut strings: Query<(&StringLabel, &mut TextColor), Without<DetailText>>,
 ) {
-    let message = match &mic.status {
-        MicStatus::Starting => "Opening the mic…".to_owned(),
-        MicStatus::WaitingForClick => "Click anywhere to turn on the mic".to_owned(),
-        MicStatus::Listening { device } => {
-            format!("Listening on {device} · pluck one string and let it ring")
-        }
-        MicStatus::Failed(err) => format!("Couldn't open the mic: {err}"),
-    };
+    let message = mic.status_line("pluck one string and let it ring");
     if status.0 != message {
         status.0 = message;
     }

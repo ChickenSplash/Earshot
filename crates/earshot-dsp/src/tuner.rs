@@ -13,6 +13,10 @@ const HOLD_SECS: f64 = 1.5;
 /// Readings in a row needed to switch to a different note, so a single
 /// octave slip or pick-attack glitch can't flip the display.
 const CONFIRM_READINGS: u32 = 3;
+/// Where a reading can slip to from the note really sounding, in semitones:
+/// an octave down or up, an octave and a fifth up, two octaves up. Near the end
+/// of a low note the overtone can outlast it and read steadily for a while.
+const OVERTONES: [f32; 4] = [-12.0, 12.0, 19.0, 24.0];
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Reading {
@@ -31,6 +35,8 @@ pub struct Tuner {
     /// A different note being heard, and how many readings in a row agreed on it.
     candidate: Option<(f32, u32)>,
     last_heard: f64,
+    /// The last note the note detector heard plucked.
+    plucked: Option<f32>,
 }
 
 impl Tuner {
@@ -41,7 +47,14 @@ impl Tuner {
             smoothed: None,
             candidate: None,
             last_heard: 0.0,
+            plucked: None,
         }
+    }
+
+    /// Tell the tuner a note was plucked, from the note detector. A jump to an
+    /// overtone of the note showing is only believed if that note was plucked.
+    pub fn plucked(&mut self, midi: f32) {
+        self.plucked = Some(midi);
     }
 
     pub fn strings(&self) -> &[u8] {
@@ -65,7 +78,7 @@ impl Tuner {
                             Some((seen, count)) if (midi - seen).abs() < 1.0 => count + 1,
                             _ => 1,
                         };
-                        if count >= CONFIRM_READINGS {
+                        if count >= CONFIRM_READINGS && self.may_switch_to(midi) {
                             self.smoothed = Some(midi);
                             self.candidate = None;
                         } else {
@@ -79,6 +92,14 @@ impl Tuner {
             None => {}
         }
         self.smoothed.map(|midi| self.reading(midi))
+    }
+
+    fn may_switch_to(&self, midi: f32) -> bool {
+        let Some(showing) = self.smoothed else {
+            return true;
+        };
+        let overtone = OVERTONES.iter().any(|o| (midi - showing - o).abs() < 1.0);
+        !overtone || self.plucked.is_some_and(|p| (p - midi).abs() < 1.0)
     }
 
     fn reading(&self, midi: f32) -> Reading {
@@ -148,9 +169,33 @@ mod tests {
     fn jumps_to_a_new_string_once_confirmed() {
         let mut tuner = Tuner::new(&STANDARD_TUNING);
         hear(&mut tuner, 40.0, 0.0);
+        tuner.plucked(64.0);
         let r = hear(&mut tuner, 64.0, 0.1).unwrap();
         assert_eq!(r.string, 5);
         assert!(r.cents.abs() < 0.1);
+    }
+
+    #[test]
+    fn a_steady_overtone_needs_a_pluck() {
+        let mut tuner = Tuner::new(&STANDARD_TUNING);
+        tuner.plucked(40.0);
+        hear(&mut tuner, 40.0, 0.0);
+        for i in 0..20 {
+            let r = tuner.update(Some(midi_to_hz(52.0)), 0.1 + i as f64 * 0.02);
+            assert_eq!(r.unwrap().string, 0);
+        }
+        tuner.plucked(52.0);
+        assert_eq!(
+            tuner.update(Some(midi_to_hz(52.0)), 0.6).unwrap().midi,
+            52.0
+        );
+    }
+
+    #[test]
+    fn other_notes_need_no_pluck() {
+        let mut tuner = Tuner::new(&STANDARD_TUNING);
+        hear(&mut tuner, 40.0, 0.0);
+        assert_eq!(hear(&mut tuner, 45.0, 0.1).unwrap().string, 1);
     }
 
     #[test]
