@@ -10,6 +10,9 @@ const IN_TUNE_CENTS: f32 = 5.0;
 const SMOOTHING: f32 = 0.7;
 /// Keep showing the last reading this long after the note fades.
 const HOLD_SECS: f64 = 1.5;
+/// Readings in a row needed to switch to a different note, so a single
+/// octave slip or pick-attack glitch can't flip the display.
+const CONFIRM_READINGS: u32 = 3;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Reading {
@@ -25,6 +28,8 @@ pub struct Reading {
 pub struct Tuner {
     strings: Vec<u8>,
     smoothed: Option<f32>,
+    /// A different note being heard, and how many readings in a row agreed on it.
+    candidate: Option<(f32, u32)>,
     last_heard: f64,
 }
 
@@ -34,6 +39,7 @@ impl Tuner {
         Self {
             strings: strings.to_vec(),
             smoothed: None,
+            candidate: None,
             last_heard: 0.0,
         }
     }
@@ -47,13 +53,26 @@ impl Tuner {
         match hz {
             Some(hz) => {
                 let midi = hz_to_midi(hz);
-                // Smooth small wobbles, but jump straight to a different note.
-                self.smoothed = Some(match self.smoothed {
+                match self.smoothed {
+                    // Smooth small wobbles.
                     Some(prev) if (midi - prev).abs() < 1.0 => {
-                        prev * SMOOTHING + midi * (1.0 - SMOOTHING)
+                        self.smoothed = Some(prev * SMOOTHING + midi * (1.0 - SMOOTHING));
+                        self.candidate = None;
                     }
-                    _ => midi,
-                });
+                    // Jump to a different note once it has been heard a few times running.
+                    _ => {
+                        let count = match self.candidate {
+                            Some((seen, count)) if (midi - seen).abs() < 1.0 => count + 1,
+                            _ => 1,
+                        };
+                        if count >= CONFIRM_READINGS {
+                            self.smoothed = Some(midi);
+                            self.candidate = None;
+                        } else {
+                            self.candidate = Some((midi, count));
+                        }
+                    }
+                }
                 self.last_heard = now;
             }
             None if now - self.last_heard > HOLD_SECS => self.smoothed = None,
@@ -88,10 +107,18 @@ mod tests {
     use super::*;
     use crate::midi_to_hz;
 
+    /// Feeds the same note enough times to be confirmed, returning the last reading.
+    fn hear(tuner: &mut Tuner, midi: f32, now: f64) -> Option<Reading> {
+        (0..CONFIRM_READINGS)
+            .map(|_| tuner.update(Some(midi_to_hz(midi)), now))
+            .last()
+            .unwrap()
+    }
+
     #[test]
     fn picks_the_nearest_string() {
         let mut tuner = Tuner::new(&STANDARD_TUNING);
-        let r = tuner.update(Some(midi_to_hz(54.7)), 0.0).unwrap();
+        let r = hear(&mut tuner, 54.7, 0.0).unwrap();
         assert_eq!(r.string, 3); // G3
         assert!((r.cents + 30.0).abs() < 0.1);
         assert!(!r.in_tune);
@@ -100,23 +127,40 @@ mod tests {
     #[test]
     fn in_tune_within_five_cents() {
         let mut tuner = Tuner::new(&STANDARD_TUNING);
-        assert!(tuner.update(Some(midi_to_hz(40.03)), 0.0).unwrap().in_tune);
+        assert!(hear(&mut tuner, 40.03, 0.0).unwrap().in_tune);
     }
 
     #[test]
     fn holds_then_clears() {
         let mut tuner = Tuner::new(&STANDARD_TUNING);
-        tuner.update(Some(110.0), 0.0);
+        hear(&mut tuner, 45.0, 0.0);
         assert!(tuner.update(None, 1.0).is_some());
         assert!(tuner.update(None, 2.0).is_none());
     }
 
     #[test]
-    fn jumps_to_a_new_string_without_smoothing() {
+    fn a_single_reading_is_not_enough_to_show_a_note() {
         let mut tuner = Tuner::new(&STANDARD_TUNING);
-        tuner.update(Some(midi_to_hz(40.0)), 0.0);
-        let r = tuner.update(Some(midi_to_hz(64.0)), 0.1).unwrap();
+        assert!(tuner.update(Some(midi_to_hz(45.0)), 0.0).is_none());
+    }
+
+    #[test]
+    fn jumps_to_a_new_string_once_confirmed() {
+        let mut tuner = Tuner::new(&STANDARD_TUNING);
+        hear(&mut tuner, 40.0, 0.0);
+        let r = hear(&mut tuner, 64.0, 0.1).unwrap();
         assert_eq!(r.string, 5);
         assert!(r.cents.abs() < 0.1);
+    }
+
+    #[test]
+    fn ignores_a_one_off_octave_slip() {
+        let mut tuner = Tuner::new(&STANDARD_TUNING);
+        hear(&mut tuner, 40.0, 0.0);
+        let slip = tuner.update(Some(midi_to_hz(52.0)), 0.1).unwrap(); // E3
+        assert_eq!(slip.string, 0);
+        assert!(slip.cents.abs() < 0.1);
+        let back = tuner.update(Some(midi_to_hz(40.0)), 0.2).unwrap();
+        assert_eq!(back.string, 0);
     }
 }

@@ -71,36 +71,59 @@ impl Yin {
             };
         }
 
-        let mut lag = min_lag;
-        while lag <= max_lag {
-            if d[lag] < threshold {
-                // Walk down to the bottom of the dip.
-                while lag < max_lag && d[lag + 1] < d[lag] {
-                    lag += 1;
-                }
-                // Fit a parabola through the dip for a pitch between whole samples.
-                let (a, b, c) = (d[lag - 1], d[lag], d[lag + 1]);
-                let curve = a - 2.0 * b + c;
-                let shift = if curve != 0.0 {
-                    (a - c) / (2.0 * curve)
-                } else {
-                    0.0
-                };
-                return Some(Pitch {
-                    hz: self.sample_rate / (lag as f32 + shift),
-                    clarity: (1.0 - b).clamp(0.0, 1.0),
-                });
+        let first = (min_lag..=max_lag).find(|&lag| d[lag] < threshold)?;
+        let mut lag = bottom_of_dip(d, first, max_lag);
+
+        // Octave check. A note also nearly repeats at half its period when its
+        // fundamental is weak (common for low E through a mic), so the first dip
+        // can be an overtone. A true note repeats about as well at 2 and 3 periods,
+        // so only move to one of those if it is clearly the better match.
+        let first_lag = lag;
+        for multiple in [2, 3] {
+            let centre = first_lag * multiple;
+            if centre + multiple > max_lag {
+                break;
             }
-            lag += 1;
+            let candidate = (centre - multiple..=centre + multiple)
+                .min_by(|&a, &b| d[a].total_cmp(&d[b]))
+                .unwrap();
+            if d[candidate] < d[lag] * OCTAVE_DEEPER && d[lag] - d[candidate] > OCTAVE_MARGIN {
+                lag = candidate;
+            }
         }
-        None
+
+        // Fit a parabola through the dip for a pitch between whole samples.
+        let (a, b, c) = (d[lag - 1], d[lag], d[lag + 1]);
+        let curve = a - 2.0 * b + c;
+        let shift = if curve != 0.0 {
+            (a - c) / (2.0 * curve)
+        } else {
+            0.0
+        };
+        Some(Pitch {
+            hz: self.sample_rate / (lag as f32 + shift),
+            clarity: (1.0 - b).clamp(0.0, 1.0),
+        })
     }
+}
+
+/// A longer period must be at least this much deeper (smaller) to replace the first dip.
+const OCTAVE_DEEPER: f32 = 0.5;
+/// ...and deeper by at least this much, so two near-perfect dips on a clean note don't count.
+const OCTAVE_MARGIN: f32 = 0.03;
+
+/// Walk down from `lag` to the bottom of the dip it is in.
+fn bottom_of_dip(d: &[f32], mut lag: usize, max_lag: usize) -> usize {
+    while lag < max_lag && d[lag + 1] < d[lag] {
+        lag += 1;
+    }
+    lag
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_signal::{RATE, string};
+    use crate::test_signal::{RATE, harmonics, string, with_noise};
     use crate::{STANDARD_TUNING, hz_to_midi, midi_to_hz};
 
     fn cents_off(found: f32, expected: f32) -> f32 {
@@ -130,20 +153,60 @@ mod tests {
         assert!((cents_off(pitch.hz, midi_to_hz(45.0)) + 20.0).abs() < 1.0);
     }
 
+    /// Through a small mic, a low string's fundamental can be quieter than its
+    /// overtones, so the signal nearly repeats every half period.
+    const WEAK_FUNDAMENTAL: [f32; 6] = [0.1, 1.0, 0.1, 0.5, 0.05, 0.3];
+
+    fn assert_reads(yin: &mut Yin, samples: &[f32], hz: f32) {
+        let pitch = yin
+            .detect(samples)
+            .unwrap_or_else(|| panic!("no pitch found for {hz} Hz"));
+        assert!(
+            cents_off(pitch.hz, hz).abs() < 5.0,
+            "{hz} Hz read as {} Hz",
+            pitch.hz
+        );
+    }
+
+    #[test]
+    fn low_e_with_a_weak_fundamental_is_not_read_an_octave_up() {
+        let hz = midi_to_hz(40.0);
+        assert_reads(
+            &mut Yin::new(RATE, 60.0, 1000.0),
+            &harmonics(hz, &WEAK_FUNDAMENTAL, 4096),
+            hz,
+        );
+    }
+
+    #[test]
+    fn weak_fundamentals_on_the_low_strings_with_noise() {
+        let mut yin = Yin::new(RATE, 60.0, 1000.0);
+        for midi in [40, 41, 43, 45, 47, 50] {
+            let hz = midi_to_hz(midi as f32);
+            assert_reads(
+                &mut yin,
+                &with_noise(harmonics(hz, &WEAK_FUNDAMENTAL, 4096), 0.02),
+                hz,
+            );
+        }
+    }
+
+    #[test]
+    fn real_higher_notes_are_not_pulled_down_an_octave() {
+        let mut yin = Yin::new(RATE, 60.0, 1000.0);
+        // E3, A3, D4, G4, B4, E5: a true note matches as well at 2 and 3 periods.
+        for midi in [52, 57, 62, 67, 71, 76] {
+            let hz = midi_to_hz(midi as f32);
+            assert_reads(&mut yin, &string(hz, 4096), hz);
+            assert_reads(&mut yin, &with_noise(string(hz, 4096), 0.05), hz);
+        }
+    }
+
     #[test]
     fn silence_and_noise_have_no_pitch() {
         let mut yin = Yin::new(RATE, 60.0, 1000.0);
         assert_eq!(yin.detect(&[0.0; 4096]), None);
-
-        // Cheap deterministic white noise.
-        let mut seed = 1u32;
-        let noise: Vec<f32> = (0..4096)
-            .map(|_| {
-                seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-                (seed >> 8) as f32 / (1 << 24) as f32 - 0.5
-            })
-            .collect();
-        assert_eq!(yin.detect(&noise), None);
+        assert_eq!(yin.detect(&with_noise(vec![0.0; 4096], 0.5)), None);
     }
 
     #[test]

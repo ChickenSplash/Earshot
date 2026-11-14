@@ -27,13 +27,29 @@ pub(crate) mod test_signal {
 
     /// A plucked-string-like tone: a fundamental plus decaying harmonics.
     pub fn string(hz: f32, len: usize) -> Vec<f32> {
+        harmonics(hz, &[1.0, 0.5, 0.33, 0.25, 0.2, 0.17], len)
+    }
+
+    /// A tone with the given amplitude for each harmonic, fundamental first.
+    pub fn harmonics(hz: f32, amps: &[f32], len: usize) -> Vec<f32> {
         (0..len)
             .map(|i| {
                 let t = i as f32 / RATE;
-                (1..=6)
-                    .map(|h| (TAU * hz * h as f32 * t).sin() * 0.5 / h as f32)
+                amps.iter()
+                    .enumerate()
+                    .map(|(h, a)| a * 0.3 * (TAU * hz * (h + 1) as f32 * t).sin())
                     .sum()
             })
             .collect()
+    }
+
+    /// Adds deterministic white noise at `level` (peak amplitude).
+    pub fn with_noise(mut samples: Vec<f32>, level: f32) -> Vec<f32> {
+        let mut seed = 1u32;
+        for s in &mut samples {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            *s += ((seed >> 8) as f32 / (1 << 24) as f32 - 0.5) * 2.0 * level;
+        }
+        samples
     }
 }
